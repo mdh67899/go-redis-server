@@ -2,12 +2,14 @@ package server
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/binary"
-	"fmt"
+	//"bytes"
+	//"encoding/binary"
+	//"fmt"
 	"io"
 	"log"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +27,7 @@ const (
 var separatorBytes = []byte(" ")
 var heartbeatBytes = []byte("_heartbeat_")
 var okBytes = []byte("OK")
+var errorRequest = []byte("your request data is not valid")
 
 type protocol struct {
 	ctx *context
@@ -69,33 +72,71 @@ func (p *protocol) IOLoop(conn net.Conn) error {
 	client := newClientV2(conn, p.ctx)
 
 	for {
-		line, err := client.Reader.ReadSlice('\n')
-		line = bytes.Trim(line, "\r\n")
-		log.Println(string(line))
-
-		if string(line) == "quit" {
-			client.Close()
-			break
+		paramCount, err := client.Reader.ReadString('\n')
+		if err == io.EOF {
+			goto exit
 		}
 
 		if err != nil {
-			if err == io.EOF {
-				err = nil
-			} else {
-				err = fmt.Errorf("failed to read command - %s", err)
+			log.Println("read content from the connection failed:", err)
+			goto exit
+		}
+
+		paramCount = strings.Trim(paramCount, "\r\n")
+		if paramCount[0] != '*' || len(paramCount) <= 1 {
+			log.Println("param count is not valid:", paramCount)
+			goto exit
+		}
+
+		count, err := strconv.Atoi(paramCount[1:])
+		if err != nil {
+			log.Println("get param number failed:", err)
+			goto exit
+		}
+
+		params := make([]string, 0, count)
+
+		for i := 0; i < count; i++ {
+			line, _ := client.Reader.ReadString('\n')
+			line = strings.Trim(line, "\r\n")
+			if line[0] != '$' || len(line) == 1 {
+				log.Println("data format is not valid:", line)
+				goto exit
 			}
-			break
+
+			line = line[1:]
+			length, err := strconv.Atoi(line)
+			if err != nil {
+				log.Println("get param length failed:", err)
+				goto exit
+			}
+
+			//log.Println("param length is: ", length)
+			line, _ = client.Reader.ReadString('\n')
+			line = strings.Trim(line, "\r\n")
+
+			//log.Println("param value is: ", line)
+
+			if len(line) != length {
+				goto exit
+			}
+
+			params = append(params, line)
+			//log.Println("append", line, "to param array")
 		}
 
-		log.Println("send")
-		err = p.Send(client, line)
-		log.Println("stop")
-
-		if err != nil {
-			err = fmt.Errorf("failed to send response - %s", err)
-			break
+		for i, p := range params {
+			log.Println("param", i, "is:", string(p))
 		}
 
+		if params[0] == "quit" {
+			goto exit
+		}
+		data := strings.Join(params, " ")
+
+		log.Println(data)
+
+		p.Send(client, StatusReply("OK"))
 		err = client.Writer.Flush()
 		if err != nil {
 			log.Println("flush data to conn failed:", err)
@@ -103,8 +144,9 @@ func (p *protocol) IOLoop(conn net.Conn) error {
 
 	}
 
+exit:
+	client.Close()
 	log.Println("IOLoop exit")
-
 	return nil
 }
 
@@ -115,26 +157,56 @@ func (p *protocol) Send(client *clientV2, data []byte) error {
 	_, err := p.SendFramedResponse(client.Writer, data)
 	if err != nil {
 		client.writeLock.Unlock()
+		client.Close()
 		return err
 	}
 
 	client.writeLock.Unlock()
-
 	return err
 }
 
 func (p *protocol) SendFramedResponse(w io.Writer, data []byte) (int, error) {
-	beBuf := make([]byte, 4)
-	size := uint32(len(data)) + 4
+	//beBuf := make([]byte, 4)
+	//size := uint32(len(data)) + 4
 
-	binary.BigEndian.PutUint32(beBuf, size)
-	n, err := w.Write(beBuf)
-	if err != nil {
-		return n, err
-	}
+	//binary.BigEndian.PutUint32(beBuf, size)
+	/*
+		n, err := w.Write(data)
+		if err != nil {
+			return n, err
+		}
+	*/
 
-	n, err = w.Write(data)
-	return n + 8, err
+	n, err := w.Write(data)
+	return n, err
+}
+
+/*
+状态回复（status reply）的第一个字节是 "+"
+错误回复（error reply）的第一个字节是 "-"
+整数回复（integer reply）的第一个字节是 ":"
+批量回复（bulk reply）的第一个字节是 "$"
+多条批量回复（multi bulk reply）的第一个字节是 "*"
+*/
+
+func StatusReply(data string) []byte {
+	return []byte("+" + data + "\r\n")
+}
+
+func ErrorReply(data string) []byte {
+	return []byte("-" + data + "\r\n")
+}
+
+func IntReply(data string) []byte {
+	return []byte(":" + data + "\r\n")
+}
+
+func BulkReply(data string) []byte {
+	return []byte("$" + data + "\r\n")
+}
+
+func MultiBulkReply(data string) []byte {
+	return []byte("*" + data + "\r\n")
 }
 
 /*

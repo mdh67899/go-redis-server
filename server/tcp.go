@@ -6,6 +6,10 @@ import (
 	"net"
 )
 
+type TCPHandler interface {
+	Handle(net.Conn)
+}
+
 func (p *RedisServer) Handle(clientConn net.Conn) {
 	log.Println("TCP: new client", clientConn.RemoteAddr())
 	/*

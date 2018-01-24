@@ -7,10 +7,6 @@ import (
 	"strings"
 )
 
-type TCPHandler interface {
-	Handle(net.Conn)
-}
-
 func TCPServer(listener net.Listener, handler TCPHandler) {
 	log.Println("TCP: listening on", listener.Addr())
 

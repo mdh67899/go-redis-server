@@ -26,14 +26,12 @@ func main() {
 	Redis.TCPListener = tcpListener
 	Redis.Unlock()
 
+	Redis.Add(1)
 	go func(redis *server.RedisServer) {
-		Redis.Add(1)
+		defer redis.Done()
 		//tcpServer, 从tcpListener收到连接, 交给tcpServer的handler方法处理
-		server.TCPServer(Redis.TCPListener, Redis)
-		Redis.Done()
+		server.TCPServer(redis.TCPListener, redis)
 	}(Redis)
 
 	Redis.Wait()
-
-	select {}
 }
